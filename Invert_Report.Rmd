@@ -1,0 +1,800 @@
+---
+title: "Invertebrate report: Soil macrofauna communities vary demonstrably in response to anthropogenic changes to environmental gradients in Narok County, Kenya"
+
+author: "G.C. North, L.E. Frelich, and A.E. Guthmann"
+
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+<br>
+<br>
+
+###  Data reading & cleaning
+
+<br>
+
+##### This step loads necessary packages, reads in all pertinent data files, and does a bit of data cleaning as well. 
+
+<br>
+
+```{r setup, include = TRUE, message = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+require(tidyverse)
+require(dplyr)
+require(ggplot2)
+require(readr)
+require(vegan)
+require(car)
+require(forcats)
+require(ggpubr)
+require(tidyr)
+require(lme4)
+require(cowplot)
+
+decomp <- read_csv("DECOMP2.csv")
+ants <- read_csv("ANTS2.csv")
+worms <- read_csv("WORMS2.csv")
+terms <- read_csv("TERMS2.csv")
+soil <- read_csv("soildat.csv")
+
+
+RDA_env <- read_csv("RDA_env.csv")
+RDA_obs <- read_csv("RDA_obs.csv")
+
+boma.vec <- unlist(rep(c(1039.7,
+              1091.6,
+              1239.9,
+              4673.7,
+              126.5,
+              3961,
+              3873.5,
+              2206.9,
+              2253,
+              1929.3,
+              2759.9,
+              1983.8,
+              2199.8,
+              540.8,
+              484.5,
+              1949.5,
+              410.3,
+              1531.2),
+              each = 5))
+
+boma.vec <- as.data.frame(boma.vec)
+
+scaled_nbcoefs <- read_csv("scaled_nbcoefs.csv")
+scaled_logcoefs <- read_csv("scaled_logcoefs.csv")
+
+rda.coefs <- read_csv("rda_coefs2.csv")
+rda.coefs <- rda.coefs %>%
+  select(,-c(6:8))
+
+decomp <- decomp %>%
+  select(-c(1)) # df containing obs for all three taxa
+
+decomp.agg <- decomp %>%
+  group_by(SiteID, PointID, hab_type, taxa) %>%
+  summarise(num_ind = sum(num_ind))
+    
+decomp.agg <- decomp.agg %>% # Calculate relative proportions
+ group_by(PointID) %>%
+ mutate(proportion = num_ind / sum(num_ind))
+
+ants <- ants %>%
+  select(-c(1)) %>%
+  cbind(boma.vec) # df contains ant observations only
+
+names(ants)[names(ants) == "boma.vec"] <- "DistBoma"
+ants$logDistBoma <- log(ants$DistBoma)
+
+worms <- worms %>%
+  select(-c(1)) %>%
+  cbind(boma.vec) # df contains worm obs only
+
+names(worms)[names(worms) == "boma.vec"] <- "DistBoma"
+worms$logDistBoma <- log(worms$DistBoma)
+
+terms <- terms %>%
+  select(-c(1)) %>%
+  cbind(boma.vec) # termite obs only
+
+names(terms)[names(terms) == "boma.vec"] <- "DistBoma"
+terms$logDistBoma <- log(terms$DistBoma)
+
+
+RDA_env <- RDA_env %>%
+  select(-c(1))  
+
+RDA_env$hab_type <- as.factor(RDA_env$hab_type)
+
+RDA_env$hab_type <- relevel(RDA_env$hab_type, 
+                            ref = "grassland")
+
+RDA_obs <- RDA_obs %>%
+  select(-c(1))
+
+rda.coefs <- rda.coefs %>%
+  select(-c(1))
+
+rda.coefs <- rda.coefs[-c(83:87), ]
+```
+
+<br>
+<br>
+
+##### Outputted objects are as follows:
+
+- decomp (df, all observations [dim: 270 x 30])
+
+- ants (df, ant observations only [dim: 90 x 32])
+
+- terms (df, termite observations only [dim: 90 x 32])
+
+- worms (df, earthworm observations only [dim: 90 x 32])
+
+- soil (df, soil characteristics [dim: 36 x 5])
+
+- RDA_env (df, environmental variables for RDA biplot [dim: 82 x 7])
+
+- RDA_obs (df, observations (Hellinger-transformed abundance data for each taxon) for RDA biplot [dim: 82 x 3])
+
+- rda.coefs (df, Euclidean distances extracted from RDA [dim: 82 x 4])
+
+- scaled_logcoefs (df, logistic regression coefficients for all predictors and taxa, including estimate, SE, upper and lower confidence interval boundaries, and associated p-values [dim: 18 x 7])
+
+- scaled_nbcoefs (df, negative binomial regression coefficients for all predictors and taxa, including estimate, SE, upper and lower confidence interval boundaries, and associated p-values [dim: 18 x 7])
+
+<br>
+<br>
+
+## Figures
+
+<br>
+
+### Abundance by Taxa - boxplot, ANOVA, & Tukey HSD
+
+##### Here we plot log (n+1)-transformed abundance distributions for each taxon of interest, descending by median value. Subsequently, we conducted an ANOVA and a post-hoc Tukey HSD test to assess the probability of significant differences between mean log (n+1)-transformed abundance values
+
+```{r ANOVA and Tukey HSD}
+
+ggplot(decomp,
+       aes(x = reorder(taxa,
+                       desc(logNum_ind),  # Use desc() to specify descending order
+                       median, 
+                       na.rm = TRUE),
+           y = logNum_ind,
+           fill = taxa)) +
+  geom_boxplot() +
+  labs(x = "Taxon",
+       y = "Number individuals at site (log [n+1]-transformed)",
+       fill = "Taxa") + 
+  theme_minimal()
+
+model <- aov(logNum_ind ~ taxa, 
+                          data = decomp)
+
+post_hoc <- TukeyHSD(model)
+
+summary(model)
+print(post_hoc)
+
+```
+
+<br>
+
+##### Now, we break down log (n+1)-transformed abundances by habitat type
+
+<br>
+
+```{r, message = FALSE, warning = FALSE}
+
+decomp2 <- decomp %>%
+  group_by(hab_type, taxa) %>%
+  summarise(
+    sd = sd(logNum_ind, na.rm = TRUE),
+    len = mean(logNum_ind, na.rm = TRUE),
+    n = n(),
+    se = sd/sqrt(n))
+
+ggplot(decomp2, aes(x = taxa, 
+                    y = len, 
+                    fill = taxa)) +
+  geom_bar(stat = "identity", 
+           position = "dodge") +
+  geom_errorbar(aes(ymin = len - se, 
+                    ymax = len + se),
+                position = position_dodge(width = 0.9),
+                width = 0.25) +
+  stat_summary(fun.y = "mean",
+               geom = "text",
+               position = position_dodge(width = 0.9),
+               vjust = -0.5,
+               hjust = 1.5,
+               aes(label = sprintf("%.2f", ..y..)),
+               size = 3,
+               color = "black") +
+  facet_wrap(~ hab_type,
+             scales = "free",
+             labeller = labeller(hab_type = c("Bush or forest",
+                                              "Grassland",
+                                              "Human use",
+                                              "Wetland"))) +
+  labs(title = "Mean site-level abundance by taxa",
+       x = "Taxa",
+       y = "Mean number individuals (log-transformed)",
+       fill = "Taxa") +
+  theme_minimal()
+
+```
+
+<br>
+<br>
+
+### Redundancy Analysis (RDA) & Habitat Partitioning Biplots
+
+<br>
+
+##### Here we conduct a constrained ordination (RDA) to visually evaluate relationships between environmental predictor variables and their Hellinger-transformed observed abundances for ants, termites and earthworms. 
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+invt.rda <- rda(RDA_obs ~ ., data = RDA_env) 
+
+summary(invt.rda)
+
+ordiplot(invt.rda, 
+         scaling = 2,  # Type 2 scaling - effects of explanatory (environmental) vars
+         type = "point")
+
+```
+
+<br>
+
+##### Here we replot the Euclidean values RD1 and RD2 including convex hulls around each habitat strata. 
+
+``` {r, message = FALSE, warning = FALSE}
+
+# stat_chull() fxn doesn't seem to want to complete the hulls; had to manually add final line segments manually
+
+bushstart <- c(0.59195, 0.237716)
+bushend <- c(0.63775, -0.147577)
+
+grassstart <- c(0.13452, -0.36705)
+grassend <- c(0.31892, 0.310784)
+
+humanstart <- c(-0.35506, 0.866577)
+humanend <- c(-0.25939, 0.404572)
+
+wetstart <- c(0.86197, -0.304876)
+wetend <- c(0.62677, -0.583837)
+
+centroids <- data.frame(x = c(0.398124167,
+                              -0.206176842,
+                              -0.4457575,
+                              0.420318),
+                        y = c(0.084908917,
+                              -0.001835684,
+                              0.492854167,
+                              -0.34317015),
+                        hab_type = c("bush/forest",
+                                     "grassland",
+                                     "humanuse",
+                                     "wetland"))
+
+hab.plot <- ggplot(data = rda.coefs, aes(x = RD1,
+                             y = RD2,
+                             color = hab_type)) +
+  geom_point() +
+  geom_vline(xintercept = 0, 
+             linetype = "solid", 
+             color = "black") +
+  geom_hline(yintercept = 0, 
+             linetype = "solid", 
+             color = "black") +
+  coord_cartesian(xlim = c(-2, 0.75),
+                  ylim = c(-1, 1)) +
+  stat_chull(aes(colour = hab_type)) +  
+  geom_segment(aes(x = grassstart[1],
+                   y = grassstart[2],
+                   xend = grassend[1],
+                   yend = grassend[2]),
+               color = "darkolivegreen3",
+               size = 0.3,
+               alpha = 0.4) +
+  geom_segment(aes(x = humanstart[1],
+                   y = humanstart[2],
+                   xend = humanend[1],
+                   yend = humanend[2]),
+               color = "lightblue3",
+               size = 0.3,
+               alpha = 0.4) +
+  geom_segment(aes(x = bushstart[1],
+                   y = bushstart[2],
+                   xend = bushend[1],
+                   yend = bushend[2]),
+               color = "coral1",
+               size = 0.3,
+               alpha = 0.4) +
+  geom_segment(aes(x = wetstart[1],
+                   y = wetstart[2],
+                   xend = wetend[1],
+                   yend = wetend[2]),
+               color = "darkorchid1",
+               size = 0.3,
+               alpha = 0.4) +
+  labs(color = "Habitat Type") +  
+  theme_bw()
+
+hab.plot +
+  geom_point(data = centroids, 
+             aes(x, y, color = hab_type), 
+             size = 4,
+             shape = "diamond",
+             color = "black")
+```
+
+
+<br>
+<br>
+
+### Presence Model— Logistic Regression
+
+<br>
+
+#### Here we model taxon presence as a function of 6 predictor variables:
+
+- logDistWater: Distance to Water in meters (log (n) transformed)
+
+- logDistBoma: Distance to Boma in meters (log (n) transformed)
+
+- logBiomass: Local Vegetation Biomass (m^3 / km^2 / year; log (n) transformed)
+
+- PctClay: Soil Clay Content (%)
+
+- PctWaterCt: Litter Water Content (%)
+
+- FreshWgtCor: Litter Mass (grams)
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+# converting to factor to appropriately specify SiteID as random effect
+ants$SiteID <- as.factor(ants$SiteID)
+terms$SiteID <- as.factor(terms$SiteID)
+worms$SiteID <- as.factor(worms$SiteID)
+
+# scale and center predictor vars
+ants$logDistWater_scaled <- scale(log(ants$DistWater))
+ants$PctClay_scaled <- scale(ants$PctClay)
+ants$PctWaterCt_scaled <- scale(ants$PctWaterCt)
+ants$logDistBoma_scaled <- scale(ants$logDistBoma)
+ants$logBiomass_scaled <- scale(ants$logBiomass)
+ants$FreshWgtCor_scaled <- scale(ants$FreshWgtCor)
+
+# scale and center predictor vars
+terms$logDistWater_scaled <- scale(log(terms$DistWater))
+terms$PctClay_scaled <- scale(terms$PctClay)
+terms$PctWaterCt_scaled <- scale(terms$PctWaterCt)
+terms$logDistBoma_scaled <- scale(terms$logDistBoma)
+terms$logBiomass_scaled <- scale(terms$logBiomass)
+terms$FreshWgtCor_scaled <- scale(terms$FreshWgtCor)
+
+# scale and center predictor vars
+worms$logDistWater_scaled <- scale(log(worms$DistWater))
+worms$PctClay_scaled <- scale(worms$PctClay)
+worms$PctWaterCt_scaled <- scale(worms$PctWaterCt)
+worms$logDistBoma_scaled <- scale(worms$logDistBoma)
+worms$logBiomass_scaled <- scale(worms$logBiomass)
+worms$FreshWgtCor_scaled <- scale(worms$FreshWgtCor)
+
+log.ant.model <- glmer(presence ~ logDistWater_scaled + 
+                         logBiomass_scaled + 
+                         logDistBoma_scaled + 
+                         PctWaterCt_scaled + 
+                         PctClay_scaled + 
+                         FreshWgtCor_scaled + 
+                         (1 | SiteID),
+                       data = ants, 
+                       family = binomial, 
+                       control = glmerControl(optimizer = "bobyqa"),
+           nAGQ = 10)
+
+log.term.model <- glmer(presence ~ logDistWater_scaled + 
+                         logBiomass_scaled + 
+                         logDistBoma_scaled + 
+                         PctWaterCt_scaled + 
+                         PctClay_scaled + 
+                         FreshWgtCor_scaled + 
+                         (1 | SiteID),
+                       data = terms, 
+                       family = binomial, 
+                       control = glmerControl(optimizer = "bobyqa"),
+                       nAGQ = 10)
+
+log.worm.model <- glmer(presence ~ logDistWater_scaled + 
+                         logBiomass_scaled + 
+                         logDistBoma_scaled + 
+                         PctWaterCt_scaled + 
+                         PctClay_scaled + 
+                         FreshWgtCor_scaled + 
+                         (1 | SiteID),
+                       data = ants, 
+                       family = binomial, 
+                       control = glmerControl(optimizer = "bobyqa"),
+                       nAGQ = 10)
+
+```
+
+<br>
+<br>
+
+##### And we output three logistic regression models:
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+summary(log.ant.model)
+
+summary(log.term.model)
+
+summary(log.worm.model)
+
+```
+
+<br>
+<br>
+
+### Abundance Model— Negative Binomial Regression
+
+<br>
+
+##### Here we model taxon abundance as a function of the *same* 6 predictor variables:
+
+- logDistWater: Distance to Water in meters (log (n) transformed)
+
+- logDistBoma: Distance to Boma in meters (log (n) transformed)
+
+- logBiomass: Local Vegetation Biomass (m^3 / km^2 / year; log (n) transformed)
+
+- PctClay: Soil Clay Content (%)
+
+- PctWaterCt: Litter Water Content (%)
+
+- FreshWgtCor: Litter Mass (grams)
+
+<br>
+
+##### Note: A negative binomial regression model was selected given our overdispersed count data. 
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+logants.nb.model <- glmer.nb(logNum_ind ~ logDistWater_scaled + 
+                                logBiomass_scaled + 
+                                logDistBoma_scaled + 
+                                PctWaterCt_scaled + 
+                                PctClay_scaled + 
+                                FreshWgtCor_scaled + 
+                                (1 | SiteID), 
+                              data = ants,
+                              family = negbinomial(link = "log"),
+                              control = glmerControl(optimizer = "bobyqa"))
+
+logterms.nb.model <- glmer.nb(logNum_ind ~ logDistWater_scaled + 
+                                logBiomass_scaled + 
+                                logDistBoma_scaled + 
+                                PctWaterCt_scaled + 
+                                PctClay_scaled + 
+                                FreshWgtCor_scaled + 
+                                (1 | SiteID), 
+                              data = terms,
+                              family = negbinomial(link = "log"),
+                              control = glmerControl(optimizer = "bobyqa"))
+
+
+logworms.nb.model <- glmer.nb(logNum_ind ~ logDistWater_scaled + 
+                                logBiomass_scaled + 
+                                logDistBoma_scaled + 
+                                PctWaterCt_scaled + 
+                                PctClay_scaled + 
+                                FreshWgtCor_scaled + 
+                                (1 | SiteID), 
+                              data = worms,
+                              family = negbinomial(link = "log"),
+                              control = glmerControl(optimizer = "bobyqa"))
+
+```
+
+<br>
+<br>
+<br>
+
+##### And we output three negative binomial regression models:
+
+``` {r, message = FALSE, warning = FALSE}
+
+summary(logants.nb.model)
+summary(logterms.nb.model)
+summary(logworms.nb.model)
+
+```
+
+<br>
+<br>
+
+### Forest Plots: Logistic & Negative Binomial Regression Coefficients
+
+<br>
+
+##### Using the above models, we extracted the logistic and negative binomial regression model coefficients (objects scaled_logcoefs and scaled_nbcoefs from data import)
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+# Logistic regression model forest plot 
+scaled_logcoefs %>% 
+  ggplot(aes(x = variable,
+             y = estimate,
+             color = taxa)) +
+  geom_point(size = 2.5,
+             position = position_dodge(width = 0.5)) +
+  geom_errorbar(aes(ymin = lower_ci, 
+                    ymax = upper_ci, 
+                    color = taxa), 
+                width = .25,
+                size = 1,
+                position = position_dodge(width = 0.5)) +
+  scale_color_manual(name = "Taxon", 
+                     labels = c("Ants", 
+                                "Termites", 
+                                "Earthworms"),
+                     values = c("coral1", 
+                                "darkturquoise", 
+                                "darkolivegreen3")) +
+  geom_hline(yintercept = 0) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10,
+                                   #angle = 30,
+                                   #vjust = .7,
+                                   color = "black"),
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 10,
+                                   color = "black"),
+        legend.position = "none") +
+  facet_wrap(~taxa) +
+  ylab("Predictor variable coefficient estimates on taxa presence") +
+  xlab("Predictor Variable") + 
+  coord_flip()
+
+```
+
+<br>
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+# Neg bin regression model forest plot 
+scaled_nbcoefs %>% 
+  ggplot(aes(x = variable,
+             y = estimate,
+             color = taxa)) +
+  geom_point(size = 2.5,
+             position = position_dodge(width = 0.5)) +
+  geom_errorbar(aes(ymin = lower_ci, 
+                    ymax = upper_ci, 
+                    color = taxa), 
+                width = .25,
+                size = 1,
+                position = position_dodge(width = 0.5)) +
+  scale_color_manual(name = "Taxon", 
+                     labels = c("Ants", 
+                                "Termites", 
+                                "Earthworms"),
+                     values = c("coral1", 
+                                "darkturquoise", 
+                                "darkolivegreen3")) +
+  geom_hline(yintercept = 0) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10,
+                                   #angle = 30,
+                                   #vjust = .7,
+                                   color = "black"),
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 10,
+                                   color = "black"),
+        legend.position = "none") +
+  facet_wrap(~taxa) +
+  ylab("Predictor variable coefficient estimates on taxa abundance") +
+  xlab("Predictor Variable") + 
+  coord_flip()
+
+```
+
+<br>
+<br>
+<br>
+
+### Community dynamics— Shannon diversity, species richness, & evenness
+
+<br>
+
+##### Here we investigate the relationship between soil macrofauna (i.e., ants, termites, and earthworms) abundance (log [n+1]-transformed) and various point-level soil macrofauna community metrics (i.e., Shannon diversity, species richness, and evenness). Since we have no evidence to assume that these relationships are linear, we applied a locally-weighted (loess) method for fitting our regression line. Parameter 'span' was set to 1.0 to reduce the potential for overfitting. 
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+# Shannon Diversity, locally-weighted (loess) scatterplot
+
+ggplot(data = decomp, aes(x = logNum_ind, 
+                          y = ShanDiv)) +
+  geom_jitter(aes(color = taxa,
+                  size = 1.5)) +
+  facet_wrap(~taxa) +
+  xlab("Point-level Abundance (log (n+1)-transformed)") +
+  ylab("Shannon Diversity") +
+  geom_smooth(method = "loess", 
+              span = 1,
+              color = "black") +
+  theme_minimal()
+```
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+# Species richness, locally-weighted (loess) scatterplot
+
+ggplot(data = decomp, aes(x = logNum_ind, 
+                          y = SpecRich)) +
+  geom_jitter(aes(color = taxa,
+                 size = 1.5)) +
+  facet_wrap(~taxa) +
+  xlab("Point-level Abundance (log (n+1)-transformed)") +
+  ylab("Species Richness") +
+  geom_smooth(method = "loess", 
+              span = 1,
+              color = "black") +
+  theme_minimal()
+```
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+# Evenness, locally-weighted (loess) scatterplot
+
+decomp <- decomp %>%
+mutate(Evenness = ShanDiv / log(SpecRich))
+
+ggplot(data = decomp, aes(x = logNum_ind, 
+                          y = Evenness)) +
+  geom_jitter(aes(color = taxa,
+                  size = 1.5)) +
+  facet_wrap(~taxa) +
+  xlab("Point-level Abundance (log (n+1)-transformed)") +
+  ylab("Evenness") +
+  geom_smooth(method = "loess", 
+              span = 1,
+              color = "black") +
+  theme_minimal()
+
+```
+
+<br>
+<br>
+<br>
+
+## Supplemental Figures
+
+<br>
+
+##### Below are code chunks and visualization outputs associated with the supplemental figures included in our text.
+
+<br>
+
+### Intra-site variability in soil clay content & litter mass
+
+<br>
+
+##### Here we generate boxplots which characterize the intra-site variability present between points for each sample site with respect to proportion soil clay content and point litter mass (g).
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+ggplot(soil, aes(x = SiteID, 
+                 y = avg,
+                 fill = variable)) +
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  geom_errorbar(aes(ymin = avg - sterr, 
+                    ymax = avg + sterr),
+                width = 0.25) +
+  labs(x = "Proportion Soil Clay Content",
+       y = "Mean Value") +
+  scale_fill_manual(values = c("clay" = "gray", 
+                               "litter" = "gray60")) +
+  facet_wrap(~ variable,
+             scales = "free",
+             labeller = labeller(hab_type = c("Soil Clay Content (%)",
+                                              "Point Litter Mass (g)"))) +
+  theme_minimal()
+
+```
+
+<br>
+<br>
+
+### Modelling relationship between distance to water and local vegetation biomass
+
+<br>
+
+##### Here we investigate the relationship between distance to water (log, meters) and local vegetation biomass (m^3 / km^2 / year). Since we have no evidence to assume that these relationships are linear, we applied a locally-weighted (loess) method for fitting our regression line. Parameter 'span' was set to 1.0 to reduce the potential for overfitting. 
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+
+ggplot(data = decomp, aes(x = DistWater, y = logBiomass)) +
+  geom_point(aes(color = hab_type,
+                 size = 1.5)) +
+  xlab("Distance to Water (m)") +
+  ylab("Local Vegetation Biomass (m3 / km2 / year)") +
+  geom_smooth(method = "loess", 
+              span = 1.0,
+              color = "black") +
+  theme_minimal()
+
+```
+
+<br>
+<br>
+
+### Proportions of ants, termites & earthworms by site
+
+<br>
+
+##### Here we model point-level community proportions for ants, termites, and earthworms using pie charts. Each pie represents one sample point; each row of five pies is representative of one sample site. Each point is labeled by habitat type. 
+
+<br>
+
+``` {r, message = FALSE, warning = FALSE}
+ 
+ggplot_list <- lapply(unique(decomp.agg$PointID), function(point) {
+  ggplot(decomp.agg[decomp.agg$PointID == point, ], 
+         aes(x = "", y = proportion, fill = taxa)) +
+    geom_bar(stat = "identity", width = 1, color = "white") +
+    coord_polar("y") +
+    theme_void() +
+    facet_grid(~ hab_type) +
+    theme(legend.position = "none") +
+    scale_fill_discrete(name = "Taxa") # +
+    # ggtitle(paste(decomp.agg$hab_type))
+})
+
+plot_grid(plotlist = ggplot_list, ncol = 10)
+
+```
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+
+#### *Version Information:*
+```{r, echo = FALSE}
+sessionInfo()
+```
